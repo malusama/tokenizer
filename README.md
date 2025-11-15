@@ -20,8 +20,20 @@ It implements various tokenizer models:
 - [x] Word level model
 - [x] Wordpiece model
 - [x] Byte Pair Encoding (BPE)
+- [x] Byte fallback for parity with HuggingFace tokenizers
 
 It can be used for both **training** new models from scratch or **fine-tuning** existing models. See [examples](./example) detail.
+
+### HuggingFace compatibility
+
+Recent updates focused on staying in lockstep with the upstream [HuggingFace tokenizers](https://github.com/huggingface/tokenizers):
+
+- Reimplemented the BPE merge priority queue to match the official algorithm so merges like `Ġ1000` behave identically.
+- Added byte-fallback support (e.g. `<0xF0>` tokens) so emoji and other multi-byte codepoints never disappear during pre-tokenization.
+- Normalized modern `tokenizer.json` files (nested `merges`, byte fallback flag, special token maps, etc.) before loading.
+- Added regression fixtures under `testdata/` and unit tests (`hf_compat_test.go`) that compare this library's output against HuggingFace for tricky edge cases.
+
+Run `go test ./...` to execute the parity tests and the rest of the suite.
 
 ## Basic example
 
@@ -79,5 +91,4 @@ All models can be loaded from files manually. [pkg.go.dev](https://pkg.go.dev/gi
 ## Acknowledgement
 
 - This project has been inspired and used many concepts from [HuggingFace Tokenizers](https://github.com/huggingface/tokenizers).
-
 
