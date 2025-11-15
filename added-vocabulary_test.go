@@ -228,3 +228,30 @@ func TestOptionUseCases(t *testing.T) {
 		t.Errorf("Got %+v\n", got)
 	}
 }
+
+func TestAddedVocabularyEmojiToken(t *testing.T) {
+	model := newModelMock([]string{}, []int{})
+	vocab := tokenizer.NewAddedVocabulary()
+
+	emoji := tokenizer.NewAddedToken("😀", false)
+	if added := vocab.AddTokens([]tokenizer.AddedToken{emoji}, model, nil); added != 1 {
+		t.Fatalf("expected to add 1 token, added %d", added)
+	}
+
+	result := vocab.ExtractAndNormalize("wow😀!", nil)
+	pretoks := result.GetSplits(normalizer.OriginalTarget, tokenizer.Byte)
+	found := false
+	for _, pretok := range pretoks {
+		if pretok.Value == "😀" && len(pretok.Tokens) == 1 {
+			if pretok.Tokens[0].Value != "😀" {
+				t.Fatalf("expected emoji token value, got %q", pretok.Tokens[0].Value)
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatalf("expected emoji token to be extracted, splits: %+v", pretoks)
+	}
+}

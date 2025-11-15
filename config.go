@@ -60,18 +60,51 @@ type ModelConfig struct {
 
 // ConfigFromFile loads config from file.
 func ConfigFromFile(file string) (*Config, error) {
-	f, err := os.Open(file)
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 
-	dec := json.NewDecoder(f)
-
-	var config *Config
-	err = dec.Decode(&config)
+	normalized, err := normalizeConfigJSON(raw)
 	if err != nil {
 		return nil, err
 	}
 
-	return config, nil
+	var cfg Config
+	if err := json.Unmarshal(normalized, &cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+func normalizeConfigJSON(raw []byte) ([]byte, error) {
+	var data map[string]interface{}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+
+	if model, ok := data["model"].(map[string]interface{}); ok {
+		if merges, ok := model["merges"].([]interface{}); ok && len(merges) > 0 {
+			flattened := make([]string, 0, len(merges))
+			for _, item := range merges {
+				switch v := item.(type) {
+				case []interface{}:
+					if len(v) != 2 {
+						continue
+					}
+					left, lok := v[0].(string)
+					right, rok := v[1].(string)
+					if lok && rok {
+						flattened = append(flattened, left+" "+right)
+					}
+				case string:
+					flattened = append(flattened, v)
+				}
+			}
+			model["merges"] = flattened
+		}
+	}
+
+	return json.Marshal(data)
 }

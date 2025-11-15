@@ -36,12 +36,23 @@ type Config struct {
 	unkToken                *string
 	continuingSubwordPrefix *string
 	endOfWordSuffix         *string
+	byteFallback            bool
 }
 
 // BpeBuilder can be used to create a `BPE` model with
 // a custom configuration
 type BpeBuilder struct {
 	config Config
+}
+
+// BPEOption configures the builder when creating a model via New
+type BPEOption func(*BpeBuilder)
+
+// WithByteFallback enables byte fallback tokens when building the model
+func WithByteFallback(enabled bool) BPEOption {
+	return func(bb *BpeBuilder) {
+		bb.ByteFallback(enabled)
+	}
 }
 
 func NewBpeBuilder() *BpeBuilder {
@@ -59,6 +70,7 @@ func NewBpeBuilder() *BpeBuilder {
 			unkToken:                nil,
 			continuingSubwordPrefix: nil,
 			endOfWordSuffix:         nil,
+			byteFallback:            false,
 		},
 	}
 }
@@ -98,6 +110,11 @@ func (bb *BpeBuilder) ContinuingSubwordPrefix(continuingSubwordPrefix string) {
 // EndOfWordSuffix set the `endOfWordSuffix` option.
 func (bb *BpeBuilder) EndOfWordSuffix(endOfWordSuffix string) {
 	bb.config.endOfWordSuffix = &endOfWordSuffix
+}
+
+// ByteFallback enables byte level fallback tokens
+func (bb *BpeBuilder) ByteFallback(enabled bool) {
+	bb.config.byteFallback = enabled
 }
 
 // Build returns a `BPE` model that uses the BpeBuilder configuration
@@ -154,6 +171,7 @@ func (bb *BpeBuilder) Build() (*BPE, error) {
 		UnkToken:                bb.config.unkToken,
 		ContinuingSubwordPrefix: bb.config.continuingSubwordPrefix,
 		EndOfWordSuffix:         bb.config.endOfWordSuffix,
+		ByteFallback:            bb.config.byteFallback,
 	}
 
 	return &bpe, nil
@@ -191,6 +209,10 @@ type BPE struct {
 	// EndOfWordSuffix is an optional suffix
 	// to caracterize and end-of-word subword
 	EndOfWordSuffix *string
+
+	// ByteFallback indicates whether tokens like <0xFF> should be used when
+	// encountering characters missing from the vocab
+	ByteFallback bool
 }
 
 func (b *BPE) builder() *BpeBuilder {
@@ -398,15 +420,15 @@ func (b *BPE) MergeWord(w string) *Word {
 		vocab := *b.Vocab
 		if id, ok := vocab[s]; ok { // found
 			word.Add(id, byteLen)
-		} else { // not found, add `unk`
-			if b.UnkToken != nil {
-				// get `unk` id
-				unkId := (*b.Vocab)[*b.UnkToken]
-				// add `unk`
-				word.Add(unkId, byteLen)
-			} else {
-				fmt.Printf("cannot find '%s' in the vocab. \n", s)
-				panic("Can't find `unk` token in the vocab. Have you added one when initiating the model?")
+		} else {
+			if !b.tryByteFallback(word, []byte(string(r))) {
+				if b.UnkToken != nil {
+					unkId := (*b.Vocab)[*b.UnkToken]
+					word.Add(unkId, byteLen)
+				} else {
+					fmt.Printf("cannot find '%s' in the vocab. \n", s)
+					panic("Can't find `unk` token in the vocab. Have you added one when initiating the model?")
+				}
 			}
 		}
 	}
@@ -418,6 +440,23 @@ func (b *BPE) MergeWord(w string) *Word {
 	}
 
 	return word
+}
+
+func (b *BPE) tryByteFallback(word *Word, raw []byte) bool {
+	if !b.ByteFallback {
+		return false
+	}
+
+	for _, bt := range raw {
+		tok := fmt.Sprintf("<0x%02X>", bt)
+		id, ok := (*b.Vocab)[tok]
+		if !ok {
+			return false
+		}
+		word.Add(id, 1)
+	}
+
+	return true
 }
 
 // WordToTokens slices word to tokens
@@ -654,6 +693,7 @@ func New(
 	unkToken *string,
 	continuingSubwordPrefix *string,
 	endOfWordSuffix *string,
+	opts ...BPEOption,
 ) (*BPE, error) {
 	merges, err := CreateMerges(vocab, mergesData)
 	if err != nil {
@@ -672,7 +712,12 @@ func New(
 			unkToken:                unkToken,
 			continuingSubwordPrefix: continuingSubwordPrefix,
 			endOfWordSuffix:         endOfWordSuffix,
+			byteFallback:            false,
 		},
+	}
+
+	for _, opt := range opts {
+		opt(builder)
 	}
 
 	return builder.Build()

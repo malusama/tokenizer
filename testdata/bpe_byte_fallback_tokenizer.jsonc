@@ -1,0 +1,1 @@
+{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":null,"post_processor":null,"decoder":null,"model":{"type":"BPE","dropout":null,"unk_token":"[UNK]","continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":true,"vocab":{"<0xF0>":0,"<0x9F>":1,"<0x98>":2,"<0x80>":3,"[UNK]":4},"merges":[]}}

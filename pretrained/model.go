@@ -100,8 +100,10 @@ func createBPE(params *util.Params) (tokenizer.Model, error) {
 		v := params.Get("end_of_word_suffix").(string)
 		endOfWordSuffix = &v
 	}
-	// fuseUnk := params.Get("use_unk").(bool)
-	// byteFallback := params.Get("byte_fallback").(bool)
+	byteFallback := false
+	if params.Has("byte_fallback") {
+		byteFallback = params.Get("byte_fallback").(bool)
+	}
 
 	vocab := castVocab(params.Get("vocab").(map[string]interface{}))
 	merges, err := castMerge(params.Get("merges").([]interface{}))
@@ -109,7 +111,12 @@ func createBPE(params *util.Params) (tokenizer.Model, error) {
 		return nil, err
 	}
 
-	return bpe.New(vocab, merges, dropout, unkToken, continuingSubwordPrefix, endOfWordSuffix)
+	var opts []bpe.BPEOption
+	if byteFallback {
+		opts = append(opts, bpe.WithByteFallback(true))
+	}
+
+	return bpe.New(vocab, merges, dropout, unkToken, continuingSubwordPrefix, endOfWordSuffix, opts...)
 }
 
 // WordPiece json format:

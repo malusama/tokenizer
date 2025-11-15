@@ -1,12 +1,9 @@
 package bpe
 
 import (
+	"container/heap"
 	"errors"
 	"math/rand"
-	"time"
-
-	"github.com/emirpasic/gods/trees/binaryheap"
-	"github.com/emirpasic/gods/utils"
 )
 
 const DefaultCacheCapacity int = 10000
@@ -15,48 +12,31 @@ type Merge struct {
 	Pos   int
 	Rank  int
 	NewId int
-	Time  time.Time
 }
 
-// Ordering is a enum of Less, Equal, and Greater
-type Ordering int
+type mergeHeap []Merge
 
-const (
-	Less    Ordering = -1
-	Equal   Ordering = 0
-	Greater Ordering = 1
-)
+func (h mergeHeap) Len() int { return len(h) }
 
-// NOTE.Should  we implement comparing methods?
-// - Eq
-// - PartialCmp
-// - Cmp
-func (m *Merge) Eq(other *Merge) bool {
-	return m.Rank == other.Rank && m.Pos == other.Pos
-}
-
-func (m *Merge) PartialCmp(other *Merge) (Ordering, error) {
-	// First, compare rank
-	if m.Rank != other.Rank {
-		if other.Rank < m.Rank {
-			return Less, nil
-		} else if other.Rank > m.Rank {
-			return Greater, nil
-		}
+func (h mergeHeap) Less(i, j int) bool {
+	if h[i].Rank != h[j].Rank {
+		return h[i].Rank < h[j].Rank
 	}
-	// Then, compare pos
-	if other.Pos < m.Pos {
-		return Less, nil
-	} else if other.Pos > m.Pos {
-		return Greater, nil
-	} else {
-		return Equal, nil
-	}
+	return h[i].Pos < h[j].Pos
 }
 
-func (m *Merge) Cmp(other *Merge) Ordering {
-	res, _ := m.PartialCmp(other)
-	return res
+func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *mergeHeap) Push(x interface{}) {
+	*h = append(*h, x.(Merge))
+}
+
+func (h *mergeHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
 }
 
 type Symbol struct {
@@ -260,142 +240,88 @@ func (w *Word) MergeAll(merges map[Pair]PairVal, dropoutOpt ...float32) {
 		dropout = dropoutOpt[0]
 	}
 
-	// countComaparator return the `smaller` rank value
-	// if both ranks are equal, then return one with smaller timestamp
-	countComparator := func(a, b interface{}) int {
-		c1 := a.(Merge).Rank
-		c2 := b.(Merge).Rank
+	pq := &mergeHeap{}
+	heap.Init(pq)
 
-		if c1 == c2 {
-			aTime := a.(Merge).Time
-			bTime := b.(Merge).Time
-
-			return utils.TimeComparator(aTime, bTime)
-		}
-
-		return utils.IntComparator(c1, c2)
-	}
-
-	var queue = binaryheap.NewWith(countComparator)
-
-	// Load items to the heap
-	var window = 2
-
-	for i := 0; i < len(w.Symbols)-1; i += window - 1 {
-		j := i + window
-		if j >= len(w.Symbols) {
-			j = len(w.Symbols)
-		}
-		slice := w.Symbols[i:j]
+	for i := 0; i < len(w.Symbols)-1; i++ {
 		pair := Pair{
-			C1: slice[0].C,
-			C2: slice[1].C,
+			C1: w.Symbols[i].C,
+			C2: w.Symbols[i+1].C,
 		}
-
-		// NOTE: if found, push to the queue. If not, continue
-		m, ok := merges[pair] // m is PairVal type with pair's rank and newId values
-		if ok {
-			// log.Fatalf("Cannot find a 'merge' for the pair: %+v\n", pair)
-			var merge Merge = Merge{
-				Pos:   i,
-				Rank:  m.Rank,
-				NewId: m.NewId,
-			}
-
-			queue.Push(merge)
+		if m, ok := merges[pair]; ok {
+			heap.Push(pq, Merge{Pos: i, Rank: m.Rank, NewId: m.NewId})
 		}
 	}
 
-	var skip []Merge
-	r := rand.New(rand.NewSource(99)) // use fixed seed to produce same output on every run.
+	skip := make([]Merge, 0)
+	r := rand.New(rand.NewSource(99))
 
-	// Pop the queue until empty
-	for {
-		top, ok := queue.Pop()
-		if !ok { // it's empty
-			break
+	for pq.Len() > 0 {
+		top := heap.Pop(pq).(Merge)
+
+		if dropout > 0.0 && r.Float32() < dropout {
+			skip = append(skip, top)
+			continue
 		}
 
-		if dropout >= 0.0 && r.Float32() < dropout {
-			// if dropout > 0.0 {
-			skip = append(skip, top.(Merge))
-		} else {
-			// Re-insert the skipped elements
-			for _, s := range skip {
-				queue.Push(s)
-			}
+		for _, s := range skip {
+			heap.Push(pq, s)
+		}
+		skip = skip[:0]
 
-			if (w.Symbols[top.(Merge).Pos]).Len > 0 {
-				if (w.Symbols[top.(Merge).Pos]).Next == -1 {
-					// Do nothing if the last symbol
-					continue // TODO: do we skip one from outer loop?
-				}
+		if top.Pos < 0 || top.Pos >= len(w.Symbols) {
+			continue
+		}
+		current := &w.Symbols[top.Pos]
+		if current.Len == 0 || current.Next == -1 {
+			continue
+		}
 
-				nextPos := w.Symbols[top.(Merge).Pos].Next
-				right := w.Symbols[nextPos]
+		nextPos := current.Next
+		if nextPos < 0 || nextPos >= len(w.Symbols) {
+			continue
+		}
+		right := w.Symbols[nextPos]
+		if right.Len == 0 {
+			continue
+		}
 
-				// Make sure we are not processing an expired queue entry
-				targetNewPair := Pair{
-					C1: w.Symbols[top.(Merge).Pos].C,
-					C2: right.C,
-				}
+		targetPair := Pair{C1: current.C, C2: right.C}
+		m, ok := merges[targetPair]
+		if !ok || m.NewId != top.NewId {
+			continue
+		}
 
-				m, ok := merges[targetNewPair]
-				if !ok || m.NewId != top.(Merge).NewId {
-					continue
-				}
+		current.MergeWith(&right, top.NewId)
+		w.Symbols[nextPos].Len = 0
 
-				// Otherwise, let's merge
-				w.Symbols[top.(Merge).Pos].MergeWith(&right, top.(Merge).NewId)
-				// Tag the right part as removed
-				w.Symbols[nextPos].Len = 0
+		if right.Next > -1 && right.Next < len(w.Symbols) {
+			w.Symbols[right.Next].Prev = top.Pos
+		}
 
-				// Update `prev` on the new `next` to the current pos
-				if right.Next > -1 && right.Next < len(w.Symbols) {
-					// create a variable so that we can asign an address.
-					pos := int(top.(Merge).Pos)
-					w.Symbols[right.Next].Prev = pos
-				}
-
-				// Insert the new pair formed with the previous symbol
-				current := w.Symbols[top.(Merge).Pos]
-				if current.Prev >= 0 {
-					prev := current.Prev
-					prevSymbol := w.Symbols[prev]
-					newPair := Pair{
-						C1: prevSymbol.C,
-						C2: current.C,
-					}
-					if m, ok := merges[newPair]; ok {
-						queue.Push(Merge{
-							Pos:   current.Prev,
-							Rank:  m.Rank,
-							NewId: m.NewId,
-						})
-					}
-				}
-
-				// Insert the new pair formed with the next symbol
-				next := current.Next
-				if int(next) < len(w.Symbols) && next > -1 {
-					nextSymbol := w.Symbols[next]
-					newPair := Pair{
-						C1: current.C,
-						C2: nextSymbol.C,
-					}
-					if m, ok := merges[newPair]; ok {
-						queue.Push(Merge{
-							Pos:   top.(Merge).Pos,
-							Rank:  m.Rank,
-							NewId: m.NewId,
-						})
-					}
+		if current.Prev >= 0 {
+			prev := current.Prev
+			prevSymbol := w.Symbols[prev]
+			if prevSymbol.Len != 0 {
+				newPair := Pair{C1: prevSymbol.C, C2: current.C}
+				if m, ok := merges[newPair]; ok {
+					heap.Push(pq, Merge{Pos: prev, Rank: m.Rank, NewId: m.NewId})
 				}
 			}
 		}
-	} // End of `for` loop
 
-	// Filter out the `marked to remove` symbols
+		next := current.Next
+		if next >= 0 && next < len(w.Symbols) {
+			nextSymbol := w.Symbols[next]
+			if nextSymbol.Len != 0 {
+				newPair := Pair{C1: current.C, C2: nextSymbol.C}
+				if m, ok := merges[newPair]; ok {
+					heap.Push(pq, Merge{Pos: top.Pos, Rank: m.Rank, NewId: m.NewId})
+				}
+			}
+		}
+	}
+
 	w.removeSymbols()
 }
 

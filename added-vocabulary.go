@@ -368,97 +368,99 @@ type idOffsets struct {
 // By implement sort interface of package sort
 
 // byStart sort by offset.Start
-type byStart []idOffsets
-
-func (s byStart) Len() int           { return len(s) }
-func (s byStart) Less(i, j int) bool { return s[i].offsets[0] < s[j].offsets[0] }
-func (s byStart) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-
-// byId sort by id
-type byId []idOffsets
-
-func (bi byId) Len() int           { return len(bi) }
-func (bi byId) Less(i, j int) bool { return bi[i].id < bi[j].id }
-func (bi byId) Swap(i, j int)      { bi[i], bi[j] = bi[j], bi[i] }
 
 // findMatches finds any AddedToken in the given sentence, using the provided MatchingSet.
 // This method returns a list "splits", each of them being a pair of Offsets
 // and an optional ID if it is an AddedToken. The list of splits cover the entire input string.
-func (av *AddedVocabulary) findMatches(sentence string, splitRe matchingSet) (retVal []idOffsets) {
-
+func (av *AddedVocabulary) findMatches(sentence string, splitRe matchingSet) []idOffsets {
 	if len(sentence) == 0 {
-		return []idOffsets{{-1, []int{0, 0}}}
+		return []idOffsets{{id: -1, offsets: []int{0, 0}}}
 	}
 
 	matches := splitRe.regexSet.Matches(sentence).Matches()
-	var ioPairs []idOffsets
+	var found []struct {
+		pattern int
+		start   int
+		end     int
+	}
 
 	for _, idx := range matches {
 		r := regexp.MustCompile(splitRe.regexSet.Patterns()[idx])
 		locs := r.FindAllStringIndex(sentence, -1)
 		for _, loc := range locs {
-			id := idx
-			ioPair := idOffsets{id: id, offsets: []int{loc[0], loc[1]}}
-			ioPairs = append(ioPairs, ioPair)
+			found = append(found, struct {
+				pattern int
+				start   int
+				end     int
+			}{pattern: idx, start: loc[0], end: loc[1]})
 		}
 	}
 
-	// Sort id-offsets by start then by pattern id
-	sort.Sort(byStart(ioPairs))
-	sort.Sort(byId(ioPairs))
+	if len(found) == 0 {
+		return []idOffsets{{id: -1, offsets: []int{0, len(sentence)}}}
+	}
 
-	// Select the matches, if they overlap, keep them
-	var (
-		i              int         = 0
-		currentOffsets int         = 0
-		splits         []idOffsets = make([]idOffsets, 0)
-	)
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].start != found[j].start {
+			return found[i].start < found[j].start
+		}
+		return found[i].pattern < found[j].pattern
+	})
 
-	for i < len(ioPairs) {
-		ioPair := ioPairs[i]
+	selected := make([]struct {
+		pattern int
+		start   int
+		end     int
+	}, 0, len(found))
+	currentOffset := 0
 
-		// current match is before the current offset, skip it
-		if ioPair.offsets[0] < currentOffsets {
+	for i := 0; i < len(found); {
+		candidate := found[i]
+		if candidate.start < currentOffset {
 			i++
 			continue
 		}
 
-		// Find out whether having overlapping neighbours.
-		// If so, keep the one with lowest Idx. All other will be skipped
-		// because `currentOffsets` will have been increased.
-		if i+1 < len(ioPairs) {
-			overlapPairs := ioPairs[i:]
-			sort.Sort(byId(overlapPairs))
-			lowestPair := overlapPairs[0] // lowest Id one
-			splits = append(splits, lowestPair)
-			currentOffsets = ioPair.offsets[1]
-			i++
-			continue
+		chosen := candidate
+		if i+1 < len(found) {
+			foundOverlap := false
+			for j := i; j < len(found); j++ {
+				other := found[j]
+				if other.start >= candidate.end {
+					break
+				}
+				if candidate.start < other.end {
+					if !foundOverlap || other.pattern < chosen.pattern {
+						chosen = other
+						foundOverlap = true
+					}
+				}
+			}
+			if foundOverlap {
+				selected = append(selected, chosen)
+				currentOffset = chosen.end
+				i++
+				continue
+			}
 		}
 
-		// Not found overlap neighbours. Just apply itself
-		splits = append(splits, ioPair)
-		currentOffsets = ioPair.offsets[1]
+		selected = append(selected, chosen)
+		currentOffset = chosen.end
 		i++
 	}
 
-	// Also, insert the splits in-between added tokens, to split the entire string
-	var (
-		startOffset int = 0
-		finalSplits []idOffsets
-	)
-
-	for _, ioPair := range splits {
-		if startOffset < ioPair.offsets[0] {
-			finalSplits = append(finalSplits, idOffsets{-1, []int{startOffset, ioPair.offsets[0]}})
+	startOffset := 0
+	finalSplits := make([]idOffsets, 0, len(selected)+1)
+	totalLen := len(sentence)
+	for _, sel := range selected {
+		if startOffset < sel.start {
+			finalSplits = append(finalSplits, idOffsets{id: -1, offsets: []int{startOffset, sel.start}})
 		}
-		finalSplits = append(finalSplits, idOffsets{splitRe.ids[ioPair.id], ioPair.offsets})
-		startOffset = ioPair.offsets[1]
+		finalSplits = append(finalSplits, idOffsets{id: splitRe.ids[sel.pattern], offsets: []int{sel.start, sel.end}})
+		startOffset = sel.end
 	}
-
-	totalByteLen := len(sentence)
-	if startOffset != totalByteLen {
-		finalSplits = append(finalSplits, idOffsets{-1, []int{startOffset, totalByteLen}})
+	if startOffset != totalLen {
+		finalSplits = append(finalSplits, idOffsets{id: -1, offsets: []int{startOffset, totalLen}})
 	}
 
 	return finalSplits
