@@ -224,3 +224,45 @@ func testMapping(t *testing.T, got, want interface{}) {
 		t.Errorf("Got: %v\n", got)
 	}
 }
+
+func TestEncodingPadLeftPreservesMetadata(t *testing.T) {
+	e := tokenizer.Encoding{
+		Ids:              []int{10, 11},
+		TypeIds:          []int{0, 1},
+		Tokens:           []string{"a", "b"},
+		Offsets:          [][]int{{0, 1}, {1, 2}},
+		SpecialTokenMask: []int{0, 0},
+		AttentionMask:    []int{1, 1},
+		Overflowing:      nil,
+		Words:            []int{0, 1},
+	}
+
+	padded := e.Pad(4, 99, 5, "[PAD]", tokenizer.Left)
+
+	if got := padded.GetIds(); !reflect.DeepEqual(got, []int{99, 99, 10, 11}) {
+		t.Fatalf("unexpected ids after padding: %v", got)
+	}
+
+	wantTypeIds := []int{5, 5, 0, 1}
+	if got := padded.GetTypeIds(); !reflect.DeepEqual(got, wantTypeIds) {
+		t.Fatalf("type ids corrupted by padding. want %v got %v", wantTypeIds, got)
+	}
+
+	wantOffsets := [][]int{{0, 0}, {0, 0}, {0, 1}, {1, 2}}
+	if got := padded.GetOffsets(); !reflect.DeepEqual(got, wantOffsets) {
+		t.Fatalf("offsets corrupted by padding. want %v got %v", wantOffsets, got)
+	}
+}
+
+func TestEncodingToken2CharsOutOfRange(t *testing.T) {
+	e := tokenizer.Encoding{Offsets: [][]int{{0, 1}}}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Token2Chars panicked: %v", r)
+		}
+	}()
+
+	if _, ok := e.Token2Chars(len(e.Offsets)); ok {
+		t.Fatalf("Token2Chars should not report success for out-of-range index")
+	}
+}

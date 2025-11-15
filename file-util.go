@@ -73,18 +73,11 @@ func CachedPath(modelNameOrPath, fileName string) (resolvedPath string, err erro
 	url := fmt.Sprintf("%s/%s/resolve/main/%s", HFpath, modelNameOrPath, fileName)
 	// url := fmt.Sprintf("%s/%s/raw/main/%s", HFpath, modelNameOrPath, fileName)
 	if isValidURL(url) {
-		if _, err := http.Get(url); err == nil {
-			err := downloadFile(url, cachedFileCandidate)
-			if err != nil {
-				err = fmt.Errorf("CachedPath() failed at trying to download file: %w", err)
-				return "", err
-			}
-
-			return cachedFileCandidate, nil
-		} else {
-			err = fmt.Errorf("CachedPath() failed: Unable to parse '%v' as a URL or as a local path.\n", url)
+		if err := downloadFile(url, cachedFileCandidate); err != nil {
+			err = fmt.Errorf("CachedPath() failed at trying to download file: %w", err)
 			return "", err
 		}
+		return cachedFileCandidate, nil
 	}
 
 	// Not resolves

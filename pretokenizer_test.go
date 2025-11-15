@@ -2,7 +2,10 @@ package tokenizer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/sugarme/tokenizer/normalizer"
 )
 
 func TestBytesToCharConverter(t *testing.T) {
@@ -38,5 +41,35 @@ func TestBytesToCharConverter(t *testing.T) {
 
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("want %v, got %v\n", want, got)
+	}
+}
+
+func TestPreTokenizedStringNormalizeKeepsExistingTokens(t *testing.T) {
+	first := normalizer.NewNormalizedFrom("hi")
+	second := normalizer.NewNormalizedFrom("there")
+	pt := &PreTokenizedString{
+		original: "hi there",
+		splits: []Split{
+			{normalized: first, tokens: []Token{NewToken(1, "hi", []int{0, 2})}},
+			{normalized: second, tokens: nil},
+		},
+	}
+
+	upper := func(ns *normalizer.NormalizedString) *normalizer.NormalizedString {
+		return normalizer.NewNormalizedFrom(strings.ToUpper(ns.GetNormalized()))
+	}
+
+	pt.Normalize(upper)
+
+	if len(pt.splits) != 2 {
+		t.Fatalf("normalize dropped splits with tokens: %+v", pt.splits)
+	}
+
+	if len(pt.splits[0].tokens) != 1 {
+		t.Fatalf("existing tokens were removed during normalize")
+	}
+
+	if got := pt.splits[1].normalized.GetNormalized(); got != "THERE" {
+		t.Fatalf("second split was not normalized, want THERE got %s", got)
 	}
 }

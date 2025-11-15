@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"os"
-	"reflect"
 	"strings"
 
 	// "regexp"
@@ -197,22 +196,19 @@ type InputSequence struct {
 // NewInputSequence creates a new InputSequence from input
 // A valid input can be a string type (RawInput) or slice of string (PretokenizedInput)
 func NewInputSequence(input interface{}) (retVal InputSequence) {
-	switch reflect.TypeOf(input).Kind().String() {
-	case "string":
+	switch v := input.(type) {
+	case string:
 		return InputSequence{
-			input:     []string{input.(string)},
+			input:     []string{v},
 			inputType: RawInput,
 		}
-	case "slice":
-		if reflect.TypeOf(input).Elem().Name() != "string" {
-			log.Fatalf("Invalid input type: Expected type of 'string' or '[]string', got %v\n", reflect.TypeOf(input).Kind().String())
-		}
+	case []string:
 		return InputSequence{
-			input:     input.([]string),
+			input:     v,
 			inputType: PretokenizedInput,
 		}
 	default:
-		log.Fatalf("Invalid input type: Expected type of 'string' or '[]string'. Got %v\n", reflect.TypeOf(input).Kind().String())
+		log.Fatalf("Invalid input type: Expected type of 'string' or '[]string'. Got %T\n", input)
 	}
 
 	return
@@ -438,34 +434,29 @@ func (t *Tokenizer) EncodeSingleSequence(sequence InputSequence, typeId int, off
 	return finalEncoding, nil
 }
 
+func (t *Tokenizer) encodeInputWithOffsets(input EncodeInput, offsetType OffsetType) (*Encoding, *Encoding, error) {
+	switch seq := input.(type) {
+	case Single:
+		encoding, err := t.EncodeSingleSequence(seq.Sentence, 0, offsetType)
+		return encoding, nil, err
+	case Dual:
+		encoding, err := t.EncodeSingleSequence(seq.Sentence, 0, offsetType)
+		if err != nil {
+			return nil, nil, err
+		}
+		pairEncoding, err := t.EncodeSingleSequence(seq.Pair, 1, offsetType)
+		return encoding, pairEncoding, err
+	default:
+		return nil, nil, fmt.Errorf("invalid encode input type %T", input)
+	}
+}
+
 // Encode the given input. This method accepts both single sequences, as well as pair
 // sequences. Also, a sequence can be a string, or already pre-tokenized input directly:
 func (t *Tokenizer) Encode(input EncodeInput, addSpecialTokens bool) (retVal *Encoding, err error) {
-	var encoding, pairEncoding *Encoding
-
-	// Encode and Postprocess
-	switch reflect.TypeOf(input).Name() {
-	case "Single":
-		seq := input.(Single).Sentence
-		encoding, err = t.EncodeSingleSequence(seq, 0, Byte)
-		if err != nil {
-			return retVal, err
-		}
-
-	case "Dual":
-		seq := input.(Dual).Sentence
-		encoding, err = t.EncodeSingleSequence(seq, 0, Byte)
-		if err != nil {
-			return retVal, err
-		}
-		pairSeq := input.(Dual).Pair
-		pairEncoding, err = t.EncodeSingleSequence(pairSeq, 1, Byte)
-		if err != nil {
-			return retVal, err
-		}
-
-	default:
-		log.Fatalf("Invalid input type - '%v'. \n", reflect.TypeOf(input).Name())
+	encoding, pairEncoding, err := t.encodeInputWithOffsets(input, Byte)
+	if err != nil {
+		return nil, err
 	}
 
 	return t.PostProcess(encoding, pairEncoding, addSpecialTokens), nil
@@ -475,34 +466,9 @@ func (t *Tokenizer) Encode(input EncodeInput, addSpecialTokens bool) (retVal *En
 // This method accepts both single sequences, as well as pair sequences. Also,
 // a sequence can be a string, or already pre-tokenized input directly:
 func (t *Tokenizer) EncodeCharOffsets(input EncodeInput, addSpecialTokens bool) (*Encoding, error) {
-	var (
-		encoding, pairEncoding *Encoding
-		err                    error
-	)
-
-	// Encode and Postprocess
-	switch reflect.TypeOf(input).Name() {
-	case "Single":
-		seq := input.(Single).Sentence
-		encoding, err = t.EncodeSingleSequence(seq, 0, Char)
-		if err != nil {
-			return nil, err
-		}
-
-	case "Dual":
-		seq := input.(Dual).Sentence
-		encoding, err = t.EncodeSingleSequence(seq, 0, Char)
-		if err != nil {
-			return nil, err
-		}
-		pairSeq := input.(Dual).Pair
-		pairEncoding, err = t.EncodeSingleSequence(pairSeq, 1, Char)
-		if err != nil {
-			return nil, err
-		}
-
-	default:
-		log.Fatalf("Invalid input type - '%v'. \n", reflect.TypeOf(input).Name())
+	encoding, pairEncoding, err := t.encodeInputWithOffsets(input, Char)
+	if err != nil {
+		return nil, err
 	}
 
 	return t.PostProcess(encoding, pairEncoding, addSpecialTokens), nil
@@ -635,30 +601,36 @@ func (t *Tokenizer) PostProcess(encoding, pairEncoding *Encoding, addSpecialToke
 
 // EncodeBatch encodes all sentences in concurrency
 func (t *Tokenizer) EncodeBatch(inputs []EncodeInput, addSpecialTokens bool) (retVal []Encoding, err error) {
-	var (
-		encodings []Encoding = make([]Encoding, len(inputs))
-		wg        sync.WaitGroup
-		mu        = &sync.Mutex{}
-	)
+	encodings := make([]Encoding, len(inputs))
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(inputs))
 
-	wg.Add(len(inputs))
-
-	// Encoding concurrently
 	for i := 0; i < len(inputs); i++ {
+		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 
 			e, err := t.Encode(inputs[i], addSpecialTokens)
 			if err != nil {
-				log.Fatal(err)
+				errCh <- err
+				return
 			}
-			mu.Lock()
 			encodings[i] = *e
-			mu.Unlock()
 		}(i)
 	}
 
 	wg.Wait()
+	close(errCh)
+
+	var firstErr error
+	for err := range errCh {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
 
 	// Do padding if included
 	if t.padding != nil {
@@ -670,7 +642,7 @@ func (t *Tokenizer) EncodeBatch(inputs []EncodeInput, addSpecialTokens bool) (re
 
 // DecodeBatch decodes all sentences in concurrency
 func (t *Tokenizer) DecodeBatch(sentences [][]int, skipSpecialTokens bool) []string {
-	var decodings []string
+	decodings := make([]string, len(sentences))
 	var wg sync.WaitGroup
 
 	wg.Add(len(sentences))
@@ -680,8 +652,7 @@ func (t *Tokenizer) DecodeBatch(sentences [][]int, skipSpecialTokens bool) []str
 		go func(i int) {
 			defer wg.Done()
 
-			s := t.Decode(sentences[i], skipSpecialTokens)
-			decodings = append(decodings, s)
+			decodings[i] = t.Decode(sentences[i], skipSpecialTokens)
 		}(i)
 	}
 
@@ -776,8 +747,6 @@ func (t *Tokenizer) Train(trainer Trainer, files []string) error {
 		currentJob := i
 
 		file := jobs[currentJob].File
-		// current is the counter for bytes of the file.
-		var current int64 = 0
 		var limit int64 = 100 * mb
 
 		fi, err := os.Stat(file)
@@ -789,15 +758,17 @@ func (t *Tokenizer) Train(trainer Trainer, files []string) error {
 		chunkNum := int(math.Ceil(fsize / float64(limit)))
 
 		// Setup some workers to process
-		for n := 1; n <= chunkNum; n++ {
+		for n := 0; n < chunkNum; n++ {
 			scanWG.Add(1)
+			offset := int64(n) * limit
+			chunkIdx := n + 1
 
-			go func(n int, file string) {
+			go func(idx int, file string, chunkOffset int64) {
+				defer scanWG.Done()
 				// start reading file chunk by chunk
-				current = t.processChunk(current, limit, file, wChan, trainer)
-				fmt.Printf("File chunk %d has been completed\n", n)
-				scanWG.Done()
-			}(n, file)
+				t.processChunk(chunkOffset, limit, file, wChan, trainer)
+				fmt.Printf("File chunk %d has been completed\n", idx)
+			}(chunkIdx, file, offset)
 		}
 	}
 
@@ -851,13 +822,7 @@ func (t *Tokenizer) Train(trainer Trainer, files []string) error {
 }
 
 // processChunk reads file chunk and processes it to word-count and sends off to channel
-// offset: start bound
-// limit: end bound
-// filename: file path includes file name
-// channel: channel to send proccessed words to.
-// current: cummulative point where the file processing stops.
-// trainer: Trainer to process tokens
-func (t *Tokenizer) processChunk(offset int64, limit int64, filename string, channel chan (map[string]int), trainer Trainer) (current int64) {
+func (t *Tokenizer) processChunk(offset int64, limit int64, filename string, channel chan map[string]int, trainer Trainer) {
 	file, err := os.Open(filename)
 	if err != nil {
 		panic(err)
@@ -872,26 +837,20 @@ func (t *Tokenizer) processChunk(offset int64, limit int64, filename string, cha
 	scanner.Buffer(buf, 2*gb)    // max buffer size = 2GB
 
 	var cummulativeSize int64
+	if offset != 0 {
+		if scanner.Scan() {
+			cummulativeSize += int64(len(scanner.Bytes()))
+		}
+	}
 
 	for scanner.Scan() {
-		// Stop if read size has exceed the chunk size
-		cummulativeSize += int64(len(scanner.Bytes()))
-		if cummulativeSize > limit {
-			break
-		}
+		lineBytes := scanner.Bytes()
+		cummulativeSize += int64(len(lineBytes))
 
 		// line words
 		lwords := make(map[string]int)
 		var line string
 		line = scanner.Text()
-		// NOTE: io.scanner returns line w/o `\n`. We add it back manually.
-		// line = fmt.Sprintf("%v\n", line)
-
-		/* input := NewSingleEncodeInput(NewInputSequence(line))
-		 * encoding, err := t.Encode(input, false)
-		 * if err != nil {
-		 *   log.Fatalf("call 'Encode' method error: %v\n", err)
-		 * } */
 
 		normalized, err := t.doNormalize(line)
 		if err != nil {
@@ -904,36 +863,19 @@ func (t *Tokenizer) processChunk(offset int64, limit int64, filename string, cha
 			log.Fatalf("call 'doPreTokenize' method error: %v\n", err)
 		}
 
-		// NOTE. should we get OffsetType as input parameter: either Byte or Char?
 		pretoks := pretokenized.GetSplits(normalizer.OriginalTarget, Byte)
 		var tokens []string
 		for _, pretok := range pretoks {
 			tokens = append(tokens, pretok.Value)
 		}
 
-		/*
-		 *     normalized := t.normalize(line)
-		 *     // NOTE: if there are no preTokenizer, the default `preTokenize`
-		 *     // will return the whole line without modification. Hence,
-		 *     // token will be a line string. In that case, we may need to strip
-		 *     // white spaces in the next step.
-		 *     preTokenized := t.preTokenize(normalized.GetNormalized())
-		 *     var tokens []string
-		 *     for _, tok := range preTokenized {
-		 *       tokens = append(tokens, tok.Value)
-		 *     }
-		 *
-		 *  */
-
-		// process tokens
-		// trainer.ProcessTokens(lwords, tokens)
 		trainer.ProcessTokens(lwords, tokens)
-		// send to channel for further process
 		channel <- lwords
 
+		if cummulativeSize >= limit {
+			break
+		}
 	}
-
-	return cummulativeSize
 }
 
 /*

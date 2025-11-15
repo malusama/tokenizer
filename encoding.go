@@ -302,7 +302,7 @@ func (e *Encoding) Word2Chars(word int) (retVal []int, ok bool) {
 
 // Token2Chars get the offsets of the token at the given index
 func (e *Encoding) Token2Chars(tokenIdx int) (retVal []int, ok bool) {
-	if tokenIdx < 0 || tokenIdx > len(e.Offsets) {
+	if tokenIdx < 0 || tokenIdx >= len(e.Offsets) {
 		return retVal, false
 	} else {
 		return e.Offsets[tokenIdx], true
@@ -587,7 +587,7 @@ func (e *Encoding) pad(targetLength, padId, padTypeId int, padToken string, dire
 		for i := 0; i < len(newTypeIds); i++ {
 			newTypeIds[i] = padTypeId
 		}
-		newTypeIds = append(newTypeIds, e.Ids...)
+		newTypeIds = append(newTypeIds, e.TypeIds...)
 		e.TypeIds = newTypeIds
 
 		newTokens := make([]string, padLength)
@@ -612,7 +612,7 @@ func (e *Encoding) pad(targetLength, padId, padTypeId int, padToken string, dire
 		e.AttentionMask = newAttentionMask
 
 		newOffsets := make([][]int, padLength)
-		for i := 0; i < len(newIds); i++ {
+		for i := 0; i < padLength; i++ {
 			newOffsets[i] = []int{0, 0}
 		}
 		newOffsets = append(newOffsets, e.Offsets...)
